@@ -1,6 +1,7 @@
 import time
 import requests
 import yfinance as yf
+import pandas as pd
 from datetime import datetime
 import sys
 
@@ -39,6 +40,10 @@ def check_ema_signal_tf(interval: str, tf_name: str):
         if data is None or len(data) < 30:
             print(f"⚠️ [{tf_name}] ข้อมูลไม่พอ", flush=True)
             return
+
+        # yfinance เวอร์ชันใหม่คืนคอลัมน์แบบ MultiIndex → ทำให้เหลือชั้นเดียว
+        if isinstance(data.columns, pd.MultiIndex):
+            data.columns = data.columns.get_level_values(0)
 
         # คำนวณ EMA
         data["EMA12"] = data["Close"].ewm(span=12, adjust=False).mean()
