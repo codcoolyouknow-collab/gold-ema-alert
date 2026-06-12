@@ -4,114 +4,128 @@ import yfinance as yf
 from datetime import datetime
 import sys
 
-# Force flush stdout
-sys.stdout = sys.stdout
-
 # ⚙️ ตั้งค่า Telegram
 TELEGRAM_TOKEN = "8817068302:AAHs7pl86xyzlVbfda164-_cmjz-46CTAH0"
 CHAT_ID = "8640948132"
 
-# 📊 ตัวแปรเก็บสถานะเพื่อไม่ให้เตือนซ้ำ
-last_signal_30m = None
-last_signal_15m = None
+# ⚙️ เลือกแหล่งราคาทอง
+#   "GC=F"   = Gold Futures (ค่าใกล้ XAUUSD แต่ไม่เท่ากันเป๊ะ)
+#   "XAUUSD=X" = ทองสปอต (ใกล้ TradingView มากกว่า) — ลองตัวนี้ถ้าอยากตรง TradingView
+SYMBOL = "GC=F"
+
+# 📊 เก็บเวลาแท่งเทียนที่เคยเตือนไปแล้ว เพื่อไม่ให้เตือนซ้ำแท่งเดิม
+last_alert_time = {"30m": None, "15m": None}
+
 
 def send_telegram(message: str):
     """ส่งข้อความไป Telegram"""
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        resp = requests.post(url, json={"chat_id": CHAT_ID, "text": message, "parse_mode": "Markdown"}, timeout=5)
-        print(f"✅ ส่งข้อความแล้ว: {resp.status_code}", flush=True)
+        resp = requests.post(
+            url,
+            json={"chat_id": CHAT_ID, "text": message, "parse_mode": "Markdown"},
+            timeout=10,
+        )
+        print(f"✅ ส่ง Telegram: HTTP {resp.status_code} | {resp.text[:80]}", flush=True)
     except Exception as e:
         print(f"❌ Telegram Error: {e}", flush=True)
 
+
 def check_ema_signal_tf(interval: str, tf_name: str):
-    """ตรวจสัญญาณ EMA12 ตัด EMA26"""
-    global last_signal_30m, last_signal_15m
-
+    """ตรวจสัญญาณ EMA12 ตัด EMA26 โดยใช้แท่งเทียนที่ 'ปิดแล้ว' เท่านั้น"""
     try:
-        # ดึงข้อมูลทองคำ (GC=F = XAUUSD Futures)
-        data = yf.download("GC=F", interval=interval, period="5d", progress=False)
+        data = yf.download(SYMBOL, interval=interval, period="5d", progress=False)
 
-        if len(data) < 26:
-            print(f"⚠️ [{tf_name}] ข้อมูลไม่พอ")
+        if data is None or len(data) < 30:
+            print(f"⚠️ [{tf_name}] ข้อมูลไม่พอ", flush=True)
             return
 
         # คำนวณ EMA
-        data['EMA12'] = data['Close'].ewm(span=12, adjust=False).mean()
-        data['EMA26'] = data['Close'].ewm(span=26, adjust=False).mean()
+        data["EMA12"] = data["Close"].ewm(span=12, adjust=False).mean()
+        data["EMA26"] = data["Close"].ewm(span=26, adjust=False).mean()
 
-        # ค่าปัจจุบันและค่าก่อนหน้า
-        current_ema12 = data['EMA12'].iloc[-1]
-        current_ema26 = data['EMA26'].iloc[-1]
-        prev_ema12 = data['EMA12'].iloc[-2]
-        prev_ema26 = data['EMA26'].iloc[-2]
-        price = data['Close'].iloc[-1]
+        # ใช้แท่งที่ปิดแล้ว: -2 = แท่งล่าสุดที่ปิด, -3 = แท่งก่อนหน้า
+        # (-1 คือแท่งที่กำลังก่อตัว ค่ายังแกว่ง จึงไม่ใช้)
+        ema12_now = float(data["EMA12"].iloc[-2])
+        ema26_now = float(data["EMA26"].iloc[-2])
+        ema12_prev = float(data["EMA12"].iloc[-3])
+        ema26_prev = float(data["EMA26"].iloc[-3])
+        price = float(data["Close"].iloc[-2])
+        candle_time = str(data.index[-2])
 
-        # 🟢 EMA12 ตัดขึ้น EMA26 (สัญญาณซื้อ)
-        if prev_ema12 <= prev_ema26 and current_ema12 > current_ema26:
-            current_signal = "BUY" if interval == "30m" else last_signal_15m
-            if (interval == "30m" and last_signal_30m != "BUY") or (interval == "15m" and last_signal_15m != "BUY"):
-                emoji = "🟢" if interval == "30m" else "🟩"
-                msg = f"""
-{emoji} *GOLD BUY SIGNAL* {emoji}
-━━━━━━━━━━━━━━━━━━
-📊 *Signal:* EMA12 ตัดขึ้น EMA26
-💰 *Price:* ${price:.2f}
-📈 *EMA12:* ${current_ema12:.2f}
-📉 *EMA26:* ${current_ema26:.2f}
-⏱ *Timeframe:* {tf_name}
-🕐 *เวลา:* {datetime.now().strftime('%H:%M:%S')}
-━━━━━━━━━━━━━━━━━━
-"""
-                send_telegram(msg)
-                print(f"✅ [{tf_name}] BUY SIGNAL ส่งแล้ว", flush=True)
-                if interval == "30m":
-                    last_signal_30m = "BUY"
-                else:
-                    last_signal_15m = "BUY"
+        diff = ema12_now - ema26_now
+        pos = "EMA12 เหนือ EMA26" if diff > 0 else "EMA12 ใต้ EMA26"
+        print(
+            f"⏳ [{tf_name}] {pos} | EMA12: ${ema12_now:.2f} | EMA26: ${ema26_now:.2f} | ห่าง: {diff:+.2f}",
+            flush=True,
+        )
 
-        # 🔴 EMA12 ตัดลง EMA26 (สัญญาณขาย)
-        elif prev_ema12 >= prev_ema26 and current_ema12 < current_ema26:
-            if (interval == "30m" and last_signal_30m != "SELL") or (interval == "15m" and last_signal_15m != "SELL"):
-                emoji = "🔴" if interval == "30m" else "🟥"
-                msg = f"""
-{emoji} *GOLD SELL SIGNAL* {emoji}
-━━━━━━━━━━━━━━━━━━
-📊 *Signal:* EMA12 ตัดลง EMA26
-💰 *Price:* ${price:.2f}
-📈 *EMA12:* ${current_ema12:.2f}
-📉 *EMA26:* ${current_ema26:.2f}
-⏱ *Timeframe:* {tf_name}
-🕐 *เวลา:* {datetime.now().strftime('%H:%M:%S')}
-━━━━━━━━━━━━━━━━━━
-"""
-                send_telegram(msg)
-                print(f"✅ [{tf_name}] SELL SIGNAL ส่งแล้ว", flush=True)
-                if interval == "30m":
-                    last_signal_30m = "SELL"
-                else:
-                    last_signal_15m = "SELL"
+        crossed_up = ema12_prev <= ema26_prev and ema12_now > ema26_now
+        crossed_down = ema12_prev >= ema26_prev and ema12_now < ema26_now
 
-        else:
-            print(f"⏳ [{tf_name}] ยังไม่มีสัญญาณ | EMA12: ${current_ema12:.2f} | EMA26: ${current_ema26:.2f}")
+        # กันเตือนซ้ำแท่งเดิม
+        if (crossed_up or crossed_down) and last_alert_time[interval] == candle_time:
+            return
+
+        if crossed_up:
+            emoji = "🟢" if interval == "30m" else "🟩"
+            msg = (
+                f"{emoji} *GOLD BUY SIGNAL* {emoji}\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
+                f"📊 *Signal:* EMA12 ตัดขึ้น EMA26\n"
+                f"💰 *Price:* ${price:.2f}\n"
+                f"📈 *EMA12:* ${ema12_now:.2f}\n"
+                f"📉 *EMA26:* ${ema26_now:.2f}\n"
+                f"⏱ *Timeframe:* {tf_name}\n"
+                f"🕐 *เวลา:* {datetime.now().strftime('%H:%M:%S')}\n"
+                f"━━━━━━━━━━━━━━━━━━"
+            )
+            send_telegram(msg)
+            print(f"🟢 [{tf_name}] BUY SIGNAL!", flush=True)
+            last_alert_time[interval] = candle_time
+
+        elif crossed_down:
+            emoji = "🔴" if interval == "30m" else "🟥"
+            msg = (
+                f"{emoji} *GOLD SELL SIGNAL* {emoji}\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
+                f"📊 *Signal:* EMA12 ตัดลง EMA26\n"
+                f"💰 *Price:* ${price:.2f}\n"
+                f"📈 *EMA12:* ${ema12_now:.2f}\n"
+                f"📉 *EMA26:* ${ema26_now:.2f}\n"
+                f"⏱ *Timeframe:* {tf_name}\n"
+                f"🕐 *เวลา:* {datetime.now().strftime('%H:%M:%S')}\n"
+                f"━━━━━━━━━━━━━━━━━━"
+            )
+            send_telegram(msg)
+            print(f"🔴 [{tf_name}] SELL SIGNAL!", flush=True)
+            last_alert_time[interval] = candle_time
 
     except Exception as e:
-        print(f"❌ [{tf_name}] Error: {e}")
+        print(f"❌ [{tf_name}] Error: {e}", flush=True)
+
 
 def check_ema_signal():
-    """ตรวจสัญญาณ TF 30m และ 15m"""
-    print(f"⏰ ตรวจสัญญาณ... {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"⏰ ตรวจสัญญาณ... {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", flush=True)
     check_ema_signal_tf("30m", "30 นาที")
     check_ema_signal_tf("15m", "15 นาที")
 
+
 if __name__ == "__main__":
     print("🚀 Gold EMA12/26 Monitor Started!", flush=True)
-    print("⏳ ตรวจสัญญาณทุก 1 นาที...", flush=True)
+    print(f"⏳ ตรวจทุก 1 นาที | แหล่งราคา: {SYMBOL}", flush=True)
+
+    # ✅ ส่งข้อความยืนยันตอนเริ่ม เพื่อพิสูจน์ว่า Telegram ต่อติด
+    send_telegram(
+        f"✅ *Gold EMA Bot เริ่มทำงานแล้ว*\n"
+        f"📡 แหล่งราคา: {SYMBOL}\n"
+        f"⏱ TF: 15 นาที + 30 นาที\n"
+        f"🕐 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+    )
 
     while True:
         try:
             check_ema_signal()
-            sys.stdout.flush()
             time.sleep(60)
         except KeyboardInterrupt:
             print("\n⛔ หยุดการทำงาน", flush=True)
