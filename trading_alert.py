@@ -14,8 +14,9 @@ CHAT_ID = "8640948132"
 #   "XAUUSD=X" = ทองสปอต (ใกล้ TradingView มากกว่า) — ลองตัวนี้ถ้าอยากตรง TradingView
 SYMBOL = "GC=F"
 
-# 📊 เก็บเวลาแท่งเทียนที่เคยเตือนไปแล้ว เพื่อไม่ให้เตือนซ้ำแท่งเดิม
-last_alert_time = {"30m": None, "15m": None}
+# 📊 จำเครื่องหมายส่วนต่าง (EMA12-EMA26) ครั้งก่อน: 1 = บวก(เหนือ), -1 = ลบ(ใต้)
+#    เตือนเมื่อ "พลิกข้าง" เท่านั้น
+last_sign = {"30m": None, "15m": None}
 
 
 def send_telegram(message: str):
@@ -59,20 +60,27 @@ def check_ema_signal_tf(interval: str, tf_name: str):
         candle_time = str(data.index[-2])
 
         diff = ema12_now - ema26_now
-        pos = "EMA12 เหนือ EMA26" if diff > 0 else "EMA12 ใต้ EMA26"
+        sign = 1 if diff > 0 else -1
+        pos = "EMA12 เหนือ EMA26" if sign > 0 else "EMA12 ใต้ EMA26"
+        prev = last_sign[interval]
         print(
             f"⏳ [{tf_name}] {pos} | EMA12: ${ema12_now:.2f} | EMA26: ${ema26_now:.2f} | ห่าง: {diff:+.2f}",
             flush=True,
         )
 
-        crossed_up = ema12_prev <= ema26_prev and ema12_now > ema26_now
-        crossed_down = ema12_prev >= ema26_prev and ema12_now < ema26_now
+        # อัปเดตเครื่องหมายล่าสุดไว้เสมอ
+        last_sign[interval] = sign
 
-        # กันเตือนซ้ำแท่งเดิม
-        if (crossed_up or crossed_down) and last_alert_time[interval] == candle_time:
+        # ครั้งแรก (ยังไม่มีค่าก่อนหน้า) → แค่บันทึกฐาน ไม่เตือน
+        if prev is None:
             return
 
-        if crossed_up:
+        # ไม่พลิกข้าง → ไม่ต้องเตือน
+        if sign == prev:
+            return
+
+        # 🟢 พลิกจากลบเป็นบวก = ตัดขึ้น (BUY)
+        if sign > 0:
             emoji = "🟢" if interval == "30m" else "🟩"
             msg = (
                 f"{emoji} *GOLD BUY SIGNAL* {emoji}\n"
@@ -87,9 +95,9 @@ def check_ema_signal_tf(interval: str, tf_name: str):
             )
             send_telegram(msg)
             print(f"🟢 [{tf_name}] BUY SIGNAL!", flush=True)
-            last_alert_time[interval] = candle_time
 
-        elif crossed_down:
+        # 🔴 พลิกจากบวกเป็นลบ = ตัดลง (SELL)
+        else:
             emoji = "🔴" if interval == "30m" else "🟥"
             msg = (
                 f"{emoji} *GOLD SELL SIGNAL* {emoji}\n"
@@ -104,7 +112,6 @@ def check_ema_signal_tf(interval: str, tf_name: str):
             )
             send_telegram(msg)
             print(f"🔴 [{tf_name}] SELL SIGNAL!", flush=True)
-            last_alert_time[interval] = candle_time
 
     except Exception as e:
         print(f"❌ [{tf_name}] Error: {e}", flush=True)
