@@ -11,7 +11,7 @@ CHAT_ID = "8640948132"
 # ⚙️ เลือกแหล่งราคาทอง
 #   "GC=F"   = Gold Futures (ค่าใกล้ XAUUSD แต่ไม่เท่ากันเป๊ะ)
 #   "XAUUSD=X" = ทองสปอต (ใกล้ TradingView มากกว่า) — ลองตัวนี้ถ้าอยากตรง TradingView
-SYMBOL = "XAUUSD=X"
+SYMBOL = "GC=F"
 
 # 📊 เก็บเวลาแท่งเทียนที่เคยเตือนไปแล้ว เพื่อไม่ให้เตือนซ้ำแท่งเดิม
 last_alert_time = {"30m": None, "15m": None}
